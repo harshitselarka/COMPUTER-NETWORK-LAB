@@ -1,0 +1,121 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <winsock2.h>
+
+#pragma comment(lib, "ws2_32.lib")
+
+#define DNS_PORT 53
+#define BUF_SIZE 512
+
+// DNS header structure
+struct DNS_HEADER {
+    unsigned short id;       // identification number
+    unsigned short flags;    // DNS flags
+    unsigned short q_count;  // number of question entries
+    unsigned short ans_count; // number of answer entries
+    unsigned short auth_count; // number of authority entries
+    unsigned short add_count; // number of resource entries
+};
+
+// Query structure
+struct QUESTION {
+    unsigned short qtype;
+    unsigned short qclass;
+};
+
+// Function to convert hostname into DNS query format
+void ChangetoDnsNameFormat(unsigned char* dns, unsigned char* host) {
+    int lock = 0;
+    strcat((char*)host, ".");
+    for (int i = 0; i < strlen((char*)host); i++) {
+        if (host[i] == '.') {
+            *dns++ = i - lock;
+            for (; lock < i; lock++) {
+                *dns++ = host[lock];
+            }
+            lock++;
+        }
+    }
+    *dns++ = '\0';
+}
+
+int main() {
+    WSADATA wsa;
+    SOCKET s;
+    struct sockaddr_in dest;
+    unsigned char buf[BUF_SIZE];
+    struct DNS_HEADER *dns = NULL;
+    struct QUESTION *qinfo = NULL;
+    unsigned char *qname;
+    int i;
+
+    printf("Initializing Winsock...\n");
+    if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
+        printf("Failed. Error Code : %d", WSAGetLastError());
+        return 1;
+    }
+    printf("Winsock initialized.\n");
+
+    s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) {
+        printf("Socket creation failed: %d", WSAGetLastError());
+        return 1;
+    }
+
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(DNS_PORT);
+    dest.sin_addr.s_addr = inet_addr("8.8.8.8"); // Google's DNS server
+
+    unsigned char hostname[100];
+    printf("Enter a domain name to query: ");
+    scanf("%s", hostname);
+
+    dns = (struct DNS_HEADER *)&buf;
+    dns->id = (unsigned short)htons(GetCurrentProcessId());
+    dns->flags = htons(0x0100); // standard query
+    dns->q_count = htons(1);
+    dns->ans_count = 0;
+    dns->auth_count = 0;
+    dns->add_count = 0;
+
+    qname = (unsigned char*)&buf[sizeof(struct DNS_HEADER)];
+    ChangetoDnsNameFormat(qname, hostname);
+
+    qinfo = (struct QUESTION*)&buf[sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1)];
+    qinfo->qtype = htons(1);   // type A
+    qinfo->qclass = htons(1);  // class IN
+
+    int packet_size = sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1) + sizeof(struct QUESTION);
+    if (sendto(s, (char*)buf, packet_size, 0, (struct sockaddr*)&dest, sizeof(dest)) == SOCKET_ERROR) {
+        printf("Send failed: %d", WSAGetLastError());
+        return 1;
+    }
+
+    printf("\nDNS query sent. Waiting for reply...\n");
+
+    int len = sizeof(dest);
+    int recv_size = recvfrom(s, (char*)buf, BUF_SIZE, 0, (struct sockaddr*)&dest, &len);
+    if (recv_size == SOCKET_ERROR) {
+        printf("Receive failed: %d", WSAGetLastError());
+        return 1;
+    }
+
+    printf("Received %d bytes from DNS server.\n", recv_size);
+
+    dns = (struct DNS_HEADER*) buf;
+    printf("\n----- DNS Header Info -----\n");
+    printf("Transaction ID: 0x%x\n", ntohs(dns->id));
+    printf("Flags: 0x%x\n", ntohs(dns->flags));
+    printf("Questions: %d\n", ntohs(dns->q_count));
+    printf("Answer RRs: %d\n", ntohs(dns->ans_count));
+    printf("Authority RRs: %d\n", ntohs(dns->auth_count));
+    printf("Additional RRs: %d\n", ntohs(dns->add_count));
+
+    printf("\nDNS Response captured successfully.\n");
+
+    closesocket(s);
+    WSACleanup();
+
+    return 0;
+}
